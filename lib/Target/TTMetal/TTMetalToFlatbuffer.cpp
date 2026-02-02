@@ -158,6 +158,17 @@ static target::metal::NocIndex toFlatbuffer(ttmetal::NocIndex nocIndex) {
   assert(false && "Unsupported NocIndex");
 }
 
+static target::metal::RoutingMode
+toFlatbuffer(ttmetal::RoutingMode routingMode) {
+  switch (routingMode) {
+  case ttmetal::RoutingMode::BidirLineMesh:
+    return target::metal::RoutingMode::BidirLineMesh;
+  case ttmetal::RoutingMode::UnidirRingTorus:
+    return target::metal::RoutingMode::UnidirRingTorus;
+  }
+  assert(false && "Unsupported RoutingMode");
+}
+
 static target::Dim2dRange toFlatbuffer(CoreRangeAttr coreRange) {
   const auto offset = coreRange.getOffset();
   const auto size = coreRange.getSize();
@@ -680,6 +691,7 @@ fabricConnectionConfigToFlatbuffer(
       *cache.fbb, toFlatbuffer(fabricConnectionConfig.getNocIndex()),
       toFlatbuffer(fabricConnectionConfig.getTopology()),
       fabricConnectionConfig.getClusterAxis(),
+      toFlatbuffer(fabricConnectionConfig.getRoutingMode()),
       fabricConnectionConfig.getNumLinks());
 }
 

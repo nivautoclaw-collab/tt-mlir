@@ -13,6 +13,11 @@ enum EthType : ushort {
   Receiver,
 }
 
+enum RoutingMode : ushort {
+  BidirLineMesh,
+  UnidirRingTorus,
+}
+
 table NocConfig {
   noc_index: NocIndex;
 }
@@ -111,5 +116,6 @@ table FabricConnectionConfig {
   noc_index: NocIndex;
   topology: Topology;
   cluster_axis: uint32;
+  routing_mode: RoutingMode;
   num_links: uint32;
 }
