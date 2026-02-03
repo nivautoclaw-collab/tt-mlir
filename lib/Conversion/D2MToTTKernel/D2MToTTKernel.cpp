@@ -1200,6 +1200,22 @@ public:
     }
     rewriter.create<ttkernel::ExperimentalWriteColMaskTileOp>(
         loc, validCols, adaptor.getOutput());
+        rewriter.eraseOp(op);
+        return success();
+      }
+    };
+class D2MExperimentalWriteFullIndexTileRewriter
+    : public OpConversionPattern<d2m::ExperimentalWriteFullIndexTileOp> {
+public:
+  using OpConversionPattern<
+      d2m::ExperimentalWriteFullIndexTileOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(d2m::ExperimentalWriteFullIndexTileOp op,
+                  d2m::ExperimentalWriteFullIndexTileOpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    rewriter.create<ttkernel::ExperimentalWriteFullIndexTileOp>(
+        op->getLoc(), adaptor.getOutput());
     rewriter.eraseOp(op);
     return success();
   }
@@ -2035,6 +2051,7 @@ void populateD2MToTTKernelPatterns(
                ttkernel::D2MTileFillRewriter,
                ttkernel::D2MWriteRowMaskTileRewriter,
                ttkernel::D2MWriteColMaskTileRewriter,
+               ttkernel::D2MExperimentalWriteFullIndexTileRewriter,
                ttkernel::D2MTileTransposeRewriter,
                ttkernel::D2MDstReinterpretCastRewriter,
                ttkernel::AcquireDstRewriter,
