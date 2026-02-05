@@ -336,7 +336,7 @@ protected:
              "Expected input tensor to be of type RankedTensorType!");
 
       tensors.push_back(static_cast<Derived *>(this)->createTensor(
-          rewriter, loc, rankedTensorType, argIndex));
+          rewriter, loc, rankedTensorType, argIndex, forwardFuncOp));
       argIndex++;
     }
 
@@ -433,8 +433,8 @@ public:
   }
 
   mlir::Value createTensor(IRRewriter &rewriter, Location loc, Type type,
-                           size_t argIndex) {
-    return generateTensor(rewriter, loc, type);
+                           size_t argIndex, func::FuncOp forwardFuncOp) {
+    return generateTensor(rewriter, loc, type, argIndex, forwardFuncOp);
   }
 
 private:
@@ -444,18 +444,39 @@ private:
   // https://github.com/tenstorrent/tt-mlir/issues/3261
   //
   static mlir::Value generateTensor(IRRewriter &rewriter, Location loc,
-                                    Type type) {
+                                    Type type, size_t argIndex,
+                                    func::FuncOp forwardFuncOp) {
     MLIRContext *ctx = rewriter.getContext();
     RankedTensorType tensorType = llvm::cast<mlir::RankedTensorType>(type);
+
+    // Check for runtime tensor sharding attribute to get local shape
+    RankedTensorType tensorTypeToUse = tensorType;
+    auto argAttrDict = forwardFuncOp.getArgAttrDict(argIndex);
+    if (argAttrDict &&
+        argAttrDict.contains(ttcore::RuntimeTensorShardingAttr::name)) {
+      Attribute attr = argAttrDict.get(ttcore::RuntimeTensorShardingAttr::name);
+      auto shardingAttr = mlir::cast<ttcore::RuntimeTensorShardingAttr>(attr);
+
+      // If the tensor is pre-sharded, use the local shape
+      if (shardingAttr.getShardStatus().getValue() ==
+          ttcore::ShardStatus::Presharded) {
+        RankedTensorType localShapeType = shardingAttr.getLocalShape();
+        // Create a new tensor type with the local shape but preserving the
+        // encoding
+        tensorTypeToUse = RankedTensorType::get(localShapeType.getShape(),
+                                                localShapeType.getElementType(),
+                                                tensorType.getEncoding());
+      }
+    }
 
     // Get the layout attribute.
     //
     ttnn::TTNNLayoutAttr layoutAttr =
-        mlir::cast<ttnn::TTNNLayoutAttr>(tensorType.getEncoding());
+        mlir::cast<ttnn::TTNNLayoutAttr>(tensorTypeToUse.getEncoding());
 
     // Get the shape of the tensor, tensor layout, and data type.
     //
-    ShapeAttr shapeAttr = ttnn::ShapeAttr::get(ctx, tensorType.getShape());
+    ShapeAttr shapeAttr = ttnn::ShapeAttr::get(ctx, tensorTypeToUse.getShape());
     ttnn::LayoutAttr tensorLayoutAttr =
         ttnn::LayoutAttr::get(ctx, layoutAttr.getLayout());
     ttcore::DataTypeAttr dTypeAttr =
@@ -469,7 +490,7 @@ private:
     // Create a new tensor of ones.
     //
     ttnn::OnesOp onesOp = rewriter.create<ttnn::OnesOp>(
-        loc, tensorType, device, shapeAttr, dTypeAttr, tensorLayoutAttr,
+        loc, tensorTypeToUse, device, shapeAttr, dTypeAttr, tensorLayoutAttr,
         /*memory_config=*/nullptr);
 
     return onesOp;
@@ -491,22 +512,42 @@ public:
   }
 
   mlir::Value createTensor(IRRewriter &rewriter, Location loc, Type type,
-                           size_t argIndex) {
-    return loadTensor(rewriter, loc, type, argIndex, this->tensorLoadDirectory,
-                      this->tensorLoadFilePrefix);
+                           size_t argIndex, func::FuncOp forwardFuncOp) {
+    return loadTensor(rewriter, loc, type, argIndex, forwardFuncOp,
+                      this->tensorLoadDirectory, this->tensorLoadFilePrefix);
   }
 
 private:
   static mlir::Value loadTensor(IRRewriter &rewriter, Location loc, Type type,
-                                size_t argIndex,
+                                size_t argIndex, func::FuncOp forwardFuncOp,
                                 std::string tensorLoadDirectory,
                                 std::string tensorLoadFilePrefix) {
     RankedTensorType tensorType = llvm::cast<mlir::RankedTensorType>(type);
 
+    // Check for runtime tensor sharding attribute to get local shape
+    RankedTensorType tensorTypeToUse = tensorType;
+    auto argAttrDict = forwardFuncOp.getArgAttrDict(argIndex);
+    if (argAttrDict &&
+        argAttrDict.contains(ttcore::RuntimeTensorShardingAttr::name)) {
+      Attribute attr = argAttrDict.get(ttcore::RuntimeTensorShardingAttr::name);
+      auto shardingAttr = mlir::cast<ttcore::RuntimeTensorShardingAttr>(attr);
+
+      // If the tensor is pre-sharded, use the local shape
+      if (shardingAttr.getShardStatus().getValue() ==
+          ttcore::ShardStatus::Presharded) {
+        RankedTensorType localShapeType = shardingAttr.getLocalShape();
+        // Create a new tensor type with the local shape but preserving the
+        // encoding
+        tensorTypeToUse = RankedTensorType::get(localShapeType.getShape(),
+                                                localShapeType.getElementType(),
+                                                tensorType.getEncoding());
+      }
+    }
+
     // Get the layout attribute.
     //
     ttnn::TTNNLayoutAttr layoutAttr =
-        mlir::cast<ttnn::TTNNLayoutAttr>(tensorType.getEncoding());
+        mlir::cast<ttnn::TTNNLayoutAttr>(tensorTypeToUse.getEncoding());
 
     // Create filename, defaults are:
     // tensorsLoadDirectory = "" (current directory)
@@ -530,7 +571,7 @@ private:
     // Create LoadTensorOp to load tensor from disk.
     //
     ttnn::LoadTensorOp loadTensorOp = rewriter.create<ttnn::LoadTensorOp>(
-        loc, tensorType, filePathAttr, device);
+        loc, tensorTypeToUse, filePathAttr, device);
 
     return loadTensorOp;
   }

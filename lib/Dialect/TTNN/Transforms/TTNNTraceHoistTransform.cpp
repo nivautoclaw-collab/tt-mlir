@@ -41,6 +41,7 @@ private:
     shouldHoist &= !::mlir::isa<mlir::tt::ttcore::LoadCachedOp>(op);
     shouldHoist &= !::mlir::isa<mlir::tt::ttnn::CaptureOrExecuteTraceOp>(op);
     shouldHoist &= !::mlir::isa<mlir::tt::ttnn::GetDeviceOp>(op);
+    shouldHoist &= !::mlir::isa<mlir::tt::ttnn::MeshShardOp>(op);
     shouldHoist &=
         !(op->hasTrait<mlir::tt::ttcore::Trait::TTCoreCreationOpTrait>());
     return shouldHoist;
@@ -87,6 +88,31 @@ private:
       }
     }
     return false;
+  }
+
+  // Get the shape to use for input slot allocation, considering pre-sharded
+  // tensors
+  RankedTensorType getTensorTypeForInputSlot(func::FuncOp funcOp,
+                                             size_t argIndex,
+                                             RankedTensorType defaultType) {
+    auto argAttrDict = funcOp.getArgAttrDict(argIndex);
+    if (argAttrDict &&
+        argAttrDict.contains(ttcore::RuntimeTensorShardingAttr::name)) {
+      Attribute attr = argAttrDict.get(ttcore::RuntimeTensorShardingAttr::name);
+      auto shardingAttr = mlir::cast<ttcore::RuntimeTensorShardingAttr>(attr);
+
+      // If the tensor is pre-sharded, use the local shape
+      if (shardingAttr.getShardStatus().getValue() ==
+          ttcore::ShardStatus::Presharded) {
+        RankedTensorType localShapeType = shardingAttr.getLocalShape();
+        // Create a new tensor type with the local shape but preserving the
+        // encoding
+        return RankedTensorType::get(localShapeType.getShape(),
+                                     localShapeType.getElementType(),
+                                     defaultType.getEncoding());
+      }
+    }
+    return defaultType;
   }
 
   // Collect all inputs and outputs outside the operation set to hoist
@@ -365,8 +391,13 @@ private:
 
       RankedTensorType inputTensorType =
           mlir::cast<RankedTensorType>(inputType);
+
+      // Use local shape for pre-sharded tensors
+      RankedTensorType tensorTypeForSlot =
+          getTensorTypeForInputSlot(traceFunc, i, inputTensorType);
+
       ttnn::TTNNLayoutAttr ttnnLayoutAttr =
-          mlir::cast<ttnn::TTNNLayoutAttr>(inputTensorType.getEncoding());
+          mlir::cast<ttnn::TTNNLayoutAttr>(tensorTypeForSlot.getEncoding());
       ttnn::MemoryConfigAttr memoryConfigAttr = ttnn::MemoryConfigAttr::get(
           context, ttnnLayoutAttr.getMemLayout(),
           ttnn::BufferTypeAttr::get(context, ttnnLayoutAttr.getBufferType()),
@@ -374,8 +405,8 @@ private:
                                          device.getWorkerGrid()));
 
       auto emptyOp = builder.create<ttnn::EmptyOp>(
-          runAndCaptureTraceFunc.getLoc(), inputType, deviceOp,
-          ttnn::ShapeAttr::get(context, inputTensorType.getShape()),
+          runAndCaptureTraceFunc.getLoc(), tensorTypeForSlot, deviceOp,
+          ttnn::ShapeAttr::get(context, tensorTypeForSlot.getShape()),
           ttcore::DataTypeAttr::get(context, ttnnLayoutAttr.getDataType()),
           ttnn::LayoutAttr::get(context, ttnnLayoutAttr.getLayout()),
           memoryConfigAttr);
@@ -596,20 +627,50 @@ private:
 
     llvm::SmallVector<Operation *> opsToHoist;
 
-    bool seenHoistableOp = false;
     mlir::Block &block = funcOp.getBlocks().front();
+
+    // Collect all hoistable ops, but skip the first MeshShardOps and the last
+    // MeshShardOps MeshShardOps at the boundaries should remain outside the
+    // trace
+    bool startedCollecting = false;
+    llvm::SmallVector<Operation *> allOps;
     for (mlir::Operation &op : block.getOperations()) {
-      if (shouldHoistOp(&op)) {
-        // Hoist all ops starting from this op into a new func
-        seenHoistableOp = true;
-        opsToHoist.push_back(&op);
-        continue;
+      if (!::mlir::isa<func::ReturnOp>(op)) {
+        allOps.push_back(&op);
       }
-      // If a non-hoistable op is found after a hoistable op, it must be a
-      // return op
-      if (seenHoistableOp && !::mlir::isa<func::ReturnOp>(op)) {
-        return op.emitError(
-            "Non-hoistable op found after seeing a hoistable op");
+    }
+
+    // Find the first non-MeshShardOp that should be hoisted
+    size_t firstHoistable = 0;
+    for (size_t i = 0; i < allOps.size(); i++) {
+      if (shouldHoistOp(allOps[i])) {
+        firstHoistable = i;
+        startedCollecting = true;
+        break;
+      }
+    }
+
+    // If we found hoistable ops, collect them until we hit MeshShardOps at the
+    // end
+    if (startedCollecting) {
+      // Find the last hoistable op (before any trailing MeshShardOps)
+      size_t lastHoistable = firstHoistable;
+      for (size_t i = allOps.size() - 1; i > firstHoistable; i--) {
+        if (shouldHoistOp(allOps[i])) {
+          lastHoistable = i;
+          break;
+        }
+      }
+
+      // Collect all hoistable ops between first and last
+      for (size_t i = firstHoistable; i <= lastHoistable; i++) {
+        if (shouldHoistOp(allOps[i])) {
+          opsToHoist.push_back(allOps[i]);
+        } else {
+          // We found a non-hoistable op in the middle - this is an error
+          return allOps[i]->emitError(
+              "Non-hoistable op found in the middle of hoistable ops");
+        }
       }
     }
 
