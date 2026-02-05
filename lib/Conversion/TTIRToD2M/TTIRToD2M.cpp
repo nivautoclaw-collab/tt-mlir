@@ -2159,7 +2159,6 @@ public:
     target.addLegalDialect<::mlir::func::FuncDialect>();
     target.addLegalDialect<::mlir::linalg::LinalgDialect>();
     target.addLegalDialect<::mlir::arith::ArithDialect>();
-    target.addLegalDialect<::mlir::tensor::TensorDialect>();
     target.addLegalDialect<mlir::tt::d2m::D2MDialect>();
     target.addLegalDialect<mlir::tt::ttcore::TTCoreDialect>();
 
