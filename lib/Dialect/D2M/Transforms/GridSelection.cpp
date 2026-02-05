@@ -1029,6 +1029,11 @@ recreateGenericOp(d2m::GenericOp genericOp,
         },
         /*singleThreadType=*/genericOp.getRegionThreadType(0));
 
+    // Preserve scratch_inputs attribute if present.
+    if (auto scratchInputs = genericOp.getScratchInputsAttr()) {
+      newGenericOp.setScratchInputsAttr(scratchInputs);
+    }
+
     genericOp.replaceAllUsesWith(newGenericOp);
     genericOp.erase();
   }
